@@ -26,6 +26,8 @@ module Resque
       rescue => error
         err.puts(error)
         err.puts(error.backtrace)
+
+        raise
       end
 
       def parse_options(argv=nil)
