@@ -13,12 +13,19 @@ module Resque
       def run
         opts = parse_options
         obtain_shared_lock opts[:lock_file]
-        daemonize if opts[:daemon]
         manage_pidfile opts[:pidfile]
-        redirect opts
+        out, err = redirect opts
         setup_environment opts
         set_pool_options opts
-        start_pool
+
+        ping_redis! if opts[:ping]
+
+        start_pool do
+          daemonize(opts) if opts[:daemon]
+        end
+      rescue => error
+        err.puts(error)
+        err.puts(error.backtrace)
       end
 
       def parse_options(argv=nil)
@@ -37,6 +44,9 @@ module Resque
           EOS
           opt.on('-c', '--config PATH', "Alternate path to config file") { |c| opts[:config] = c }
           opt.on('-a', '--appname NAME', "Alternate appname") { |c| opts[:appname] = c }
+          opt.on("-r", '--ping', "Ping redis") {
+            opts[:ping] = true
+          }
           opt.on("-d", '--daemon', "Run as a background daemon") {
             opts[:daemon] = true
             opts[:stdout]  ||= "log/resque-pool.stdout.log"
@@ -76,12 +86,16 @@ module Resque
         opts
       end
 
-      def daemonize
-        raise 'First fork failed' if (pid = fork) == -1
-        exit unless pid.nil?
-        Process.setsid
-        raise 'Second fork failed' if (pid = fork) == -1
-        exit unless pid.nil?
+      def daemonize(opts)
+        if Process.respond_to?(:daemon)
+          Process.daemon(true, opts[:stderr] || opts[:stdout])
+        else
+          raise 'First fork failed' if (pid = fork) == -1
+          exit unless pid.nil?
+          Process.setsid
+          raise 'Second fork failed' if (pid = fork) == -1
+          exit unless pid.nil?
+        end
       end
 
       # Obtain a lock on a file that will be held for the lifetime of
@@ -94,6 +108,10 @@ module Resque
         unless @lock_file.flock(File::LOCK_SH)
           fail "unable to obtain shared lock on #{@lock_file}"
         end
+      end
+
+      def ping_redis!
+        Resque.redis.ping
       end
 
       def manage_pidfile(pidfile)
@@ -132,13 +150,16 @@ module Resque
       end
 
       def redirect(opts)
-        $stdin.reopen  '/dev/null'        if opts[:daemon]
+        $stdin.reopen  '/dev/null'        if opts[:daemon] && !Process.respond_to?(:daemon)
         # need to reopen as File, or else Resque::Pool::Logging.reopen_logs! won't work
         out = File.new(opts[:stdout], "a") if opts[:stdout] && !opts[:stdout].empty?
         err = File.new(opts[:stderr], "a") if opts[:stderr] && !opts[:stderr].empty?
+        stdout = $stdout.dup
+        stderr = $stderr.dup
         $stdout.reopen out if out
         $stderr.reopen err if err
         $stdout.sync = $stderr.sync = true unless opts[:nosync]
+        [stdout, stderr]
       end
 
       # TODO: global variables are not the best way
@@ -171,14 +192,14 @@ module Resque
         Resque::Pool.single_process_group = opts[:single_process_group]
       end
 
-      def start_pool
+      def start_pool(&block)
         require 'rake'
         require 'resque/pool/tasks'
         Rake.application.init
         Rake.application.load_rakefile
         Rake.application["resque:pool"].invoke
+        Resque::Pool.run(&block)
       end
-
     end
   end
 end

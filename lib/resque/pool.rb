@@ -102,11 +102,15 @@ module Resque
       )
     end
 
-    def self.run
+    def self.run(&block)
+      start(&block).join
+    end
+
+    def self.start(&block)
       if GC.respond_to?(:copy_on_write_friendly=)
         GC.copy_on_write_friendly = true
       end
-      create_configured.start.join
+      create_configured.start.tap(&block || Proc.new{})
     end
 
     def self.create_configured
