@@ -24,8 +24,13 @@ module Resque
           daemonize(opts) if opts[:daemon]
         end
       rescue => error
-        err.puts(error)
-        err.puts(error.backtrace)
+        begin
+          err.puts(error)
+          err.puts(error.backtrace)
+        rescue
+          puts error
+          puts error.backtrace
+        end
 
         raise
       end
